@@ -1,0 +1,7 @@
+.env
+cache-startgg.json
+__pycache__/
+
+# Documents générés par les scripts et fichiers temporaires de Word
+Document de suivi - *.docx
+~$*
