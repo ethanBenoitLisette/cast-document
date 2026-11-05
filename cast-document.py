@@ -61,17 +61,18 @@ PERSOS_IGNORES = {"Random Character", "Random"}
 
 DOSSIER_ICONES = Path("Pngs-20261001T134705Z-1-001/Pngs")
 VERT = "00B050"
+GRIS_CLAIR = "D9D9D9"
 COULEURS_TIERS = ["FF7F7F", "FFBF7F", "FFDF7F", "FFFF7F", "BFFF7F", "7FFF7F", "7FFFFF"]
 TYPES_BRACKET = {"DOUBLE_ELIMINATION": "double élimination", "SINGLE_ELIMINATION": "simple élimination",
                  "ROUND_ROBIN": "round robin", "SWISS": "rondes suisses"}
 
 # Noms start.gg dont l'icône porte un autre nom de fichier
 ICONES_SPECIALES = {
-    "hero": "dq_hero", "incineroar": "gaogaen", "pyra_and_mythra": "homura", "pyra": "homura",
-    "mythra": "homura", "min_min": "minmin", "piranha_plant": "packun_flower",
+    "hero": "dq_hero", "incineroar": "gaogaen", "pyra": "pyra_and_mythra",
+    "mythra": "pyra_and_mythra", "min_min": "minmin", "piranha_plant": "packun_flower",
     "banjo_kazooie": "banjo_and_kazooie", "rosalina": "rosalina_and_luma", "r_o_b": "rob",
-    "game_and_watch": "mr_game_and_watch", "mii_brawler": "mii_fighter",
-    "mii_swordfighter": "mii_fighter", "mii_gunner": "mii_fighter", "alex": "steve",
+    "game_and_watch": "mr_game_and_watch", "mii_swordfighter": "mii_sword_fighter",
+    "mii_swordsman": "mii_sword_fighter", "alex": "steve",
 }
 
 # --- Requêtes GraphQL -------------------------------------------------------
@@ -403,12 +404,17 @@ def persos_principaux(api, joueur):
     return [nom for nom, n in persos.most_common(NB_PERSOS_MAX) if n >= maximum * PART_MIN_PERSO]
 
 
+def cle_icone(nom):
+    """« Pyra & Mythra », « pyra & mythra » et « pyra_and_mythra » donnent la même clé."""
+    cle = unicodedata.normalize("NFKD", nom).encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]+", "_", cle.replace("&", "and")).strip("_")
+
+
 def chemin_icone(nom_perso):
     if not hasattr(chemin_icone, "index"):
-        chemin_icone.index = {p.stem.lower(): p for p in DOSSIER_ICONES.glob("*.png")}
-    cle = unicodedata.normalize("NFKD", nom_perso).encode("ascii", "ignore").decode().lower()
-    cle = re.sub(r"[^a-z0-9]+", "_", cle.replace("&", "and")).strip("_")
-    return chemin_icone.index.get(ICONES_SPECIALES.get(cle, cle))
+        chemin_icone.index = {cle_icone(p.stem): p for p in DOSSIER_ICONES.glob("*.png")}
+    cle = cle_icone(nom_perso)
+    return chemin_icone.index.get(cle) or chemin_icone.index.get(ICONES_SPECIALES.get(cle, cle))
 
 
 # --- Helpers de mise en page ------------------------------------------------
@@ -446,25 +452,59 @@ def ligne_lien(doc, libelle, url, gras_italique=False):
         paragraphe.add_run("……………………………………………………")
 
 
-def tableau_tiers(doc, compte, avec_icones):
-    """Tableau façon tier list : une ligne par nombre d'occurrences."""
+def tableau_tiers(doc, compte, avec_icones, regrouper_uniques=False):
+    """Tableau façon tier list : une ligne par nombre d'occurrences. Avec
+    regrouper_uniques, les entrées présentes une seule fois forment un dernier
+    palier « Autre »."""
     groupes = defaultdict(list)
     for nom, n in compte.items():
         groupes[n].append(nom)
-    if not groupes:
+    autres = groupes.pop(1, []) if regrouper_uniques else []
+    if not groupes and not autres:
         doc.add_paragraph("Aucune donnée disponible sur start.gg.").runs[0].italic = True
         return
-    table = doc.add_table(rows=len(groupes), cols=2)
+    lignes = [(str(n), noms) for n, noms in sorted(groupes.items(), reverse=True)]
+    if autres:
+        lignes.append(("Autre", autres))
+    table = doc.add_table(rows=len(lignes), cols=2)
     table.style = "Table Grid"
-    for i, (n, noms) in enumerate(sorted(groupes.items(), reverse=True)):
+    for i, (libelle, noms) in enumerate(lignes):
         gauche, droite = table.rows[i].cells
         gauche.width, droite.width = Cm(1.5), Cm(14.5)
-        fond_cellule(gauche, COULEURS_TIERS[min(i, len(COULEURS_TIERS) - 1)])
-        ecrire(gauche, str(n), gras=True, alignement=WD_ALIGN_PARAGRAPH.CENTER)
+        couleur = GRIS_CLAIR if libelle == "Autre" else COULEURS_TIERS[min(i, len(COULEURS_TIERS) - 1)]
+        fond_cellule(gauche, couleur)
+        ecrire(gauche, libelle, gras=True, alignement=WD_ALIGN_PARAGRAPH.CENTER)
         if avec_icones:
             icones(droite.paragraphs[0], sorted(noms), hauteur_cm=0.8)
+        elif libelle == "Autre":
+            nb_joueurs = sum(compte[nom] for nom in noms)
+            ecrire(droite, f"{nb_joueurs} joueurs", gras=True)
+            detail = droite.add_paragraph(f"Villes représentées par un seul joueur : {', '.join(sorted(noms, key=str.lower))}")
+            detail.paragraph_format.space_after = Pt(0)
+            detail.runs[0].font.size = Pt(8)
+            detail.runs[0].italic = True
         else:
-            ecrire(droite, ", ".join(sorted(noms)))
+            ecrire(droite, ", ".join(sorted(noms, key=str.lower)))
+
+
+def harmoniser_villes(joueurs):
+    """Regroupe les orthographes d'une même ville (« lyon », « LYON », « Lyon » → « Lyon »)."""
+    variantes = defaultdict(Counter)
+    for joueur in joueurs:
+        if joueur["ville"]:
+            variantes[joueur["ville"].casefold()][joueur["ville"]] += 1
+
+    def forme_retenue(compte):
+        bien_ecrites = [v for v in compte if not v.islower() and not v.isupper()]
+        if bien_ecrites:
+            return max(bien_ecrites, key=compte.get)
+        ville = compte.most_common(1)[0][0]
+        return ville.title() if ville.isupper() else ville[0].upper() + ville[1:]
+
+    noms = {cle: forme_retenue(compte) for cle, compte in variantes.items()}
+    for joueur in joueurs:
+        if joueur["ville"]:
+            joueur["ville"] = noms[joueur["ville"].casefold()]
 
 
 # --- Sections du document ---------------------------------------------------
@@ -586,7 +626,7 @@ def profils_joueurs(doc, pools, rankings, teams):
     )
     tableau_tiers(doc, Counter(j["persos"][0] for j in tous if j["persos"]), avec_icones=True)
     doc.add_paragraph()
-    tableau_tiers(doc, Counter(j["ville"] for j in tous if j["ville"]), avec_icones=False)
+    tableau_tiers(doc, Counter(j["ville"] for j in tous if j["ville"]), avec_icones=False, regrouper_uniques=True)
     source(doc, f"start.gg – {vierge.TOURNOI}")
     saut_de_page(doc)
 
@@ -680,6 +720,8 @@ def main():
     parseur.add_argument("url", nargs="?", help="URL de l'event start.gg (demandée si absente)")
     parseur.add_argument("--sortie", help="nom du fichier .docx généré (demandé si absent)")
     args = parseur.parse_args()
+    # Certains terminaux Windows ne savent pas afficher les emojis des noms d'event (🏆…)
+    sys.stdout.reconfigure(errors="replace")
 
     charger_env()
     token = os.environ.get("STARTGG_TOKEN")
@@ -700,6 +742,7 @@ def main():
     print("Récupération des pools et des seeds...")
     pools = joueurs_par_pool(api, evenement)
     tous = [j for _, joueurs in pools for j in joueurs]
+    harmoniser_villes(tous)
     if not tous:
         sys.exit("Aucun inscrit trouvé sur cet event start.gg.")
     joueurs_par_seed = {j["seed"]: j for j in tous if j["seed"]}
